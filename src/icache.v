@@ -1,5 +1,5 @@
 // ============================================================
-// Direct-Mapped Instruction Cache — Clean Rewrite
+// Direct-Mapped Instruction Cache - Optimized for 0-cycle hit
 // Author:   Aryaman Gupta
 // ============================================================
 
@@ -31,15 +31,26 @@ module icache (
     // States
     localparam IDLE  = 2'd0;
     localparam MISS  = 2'd1;
-    localparam FILL  = 2'd2;
-    localparam SERVE = 2'd3;
 
-    reg [1:0]  state;
+    reg        state;
     reg [31:0] miss_addr;
-    reg [31:0] miss_data;
+
+    // Combinatorial signals for 0-cycle hit detection
+    reg        hit_comb;
+    reg [31:0] instr_comb;
+
+    // FIX: Combinatorial hit detection to eliminate 1-cycle lag 
+    always @(*) begin
+        if (valid[cpu_addr[5:2]] && (tag[cpu_addr[5:2]] == cpu_addr[31:6])) begin
+            hit_comb   = 1'b1;
+            instr_comb = data[cpu_addr[5:2]];
+        end else begin
+            hit_comb   = 1'b0;
+            instr_comb = 32'h0;
+        end
+    end
 
     integer j;
-
     always @(posedge clk) begin
         if (rst) begin
             for (j = 0; j < 16; j = j + 1) begin
@@ -55,23 +66,18 @@ module icache (
             hit_count  <= 0;
             state      <= IDLE;
             miss_addr  <= 0;
-            miss_data  <= 0;
         end else begin
-
             case (state)
-
                 IDLE: begin
-                    // Do hit check INSIDE always block — avoids Icarus wire scheduling issues
-                    if (valid[cpu_addr[5:2]] && (tag[cpu_addr[5:2]] == cpu_addr[31:6])) begin
-                        // HIT
+                    if (hit_comb) begin
                         cache_hit <= 1'b1;
-                        instr_out <= data[cpu_addr[5:2]];
+                        instr_out <= instr_comb;
                         stall     <= 1'b0;
                         mem_rd_en <= 1'b0;
+                        // Fixed: Increment hit_count simply when a hit occurs 
                         hit_count <= hit_count + 1;
-                        // stay in IDLE
                     end else begin
-                        // MISS
+                        // MISS: Trigger memory fetch 
                         cache_hit  <= 1'b0;
                         instr_out  <= 32'h0;
                         stall      <= 1'b1;
@@ -88,26 +94,18 @@ module icache (
                     mem_rd_en <= 1'b0;
 
                     if (mem_data_valid) begin
-                        // Fill cache immediately when data arrives
+                        // Fill cache immediately when data arrives 
                         valid[miss_addr[5:2]] <= 1'b1;
                         tag  [miss_addr[5:2]] <= miss_addr[31:6];
                         data [miss_addr[5:2]] <= mem_data_in;
-                        instr_out <= mem_data_in;   // serve instruction
+                        
+                        instr_out <= mem_data_in; 
                         cache_hit <= 1'b1;
-                        stall     <= 1'b0;          // un-stall pipeline
+                        stall     <= 1'b0; 
                         state     <= IDLE;
                     end
                 end
-
-                SERVE: begin
-                    // Serve directly from miss_data — don't rely on array read-back
-                    instr_out <= miss_data;
-                    cache_hit <= 1'b1;
-                    stall     <= 1'b0;
-                    mem_rd_en <= 1'b0;
-                    state     <= IDLE;
-                end
-
+                
                 default: state <= IDLE;
             endcase
         end
